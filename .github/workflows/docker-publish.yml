@@ -1,5 +1,6 @@
 
 name: Build and Publish Users Docker Image
+
 on:
   push:
     branches:
@@ -18,7 +19,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   build-and-push:
@@ -26,12 +26,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       # 1. Checkout source code
       - name: Checkout Code
+        id: checkout
         uses: actions/checkout@v4
 
-      # 2. Setup Java 23 (matches your pom.xml)
+      # 2. Setup Java 23
       - name: Setup Java 23
+        id: java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -39,85 +42,81 @@ jobs:
           cache: maven
           cache-dependency-path: Users/pom.xml
 
-      # 3. Build and run tests
+      # 3. Build and run Maven tests
       - name: Maven Build and Test
+        id: maven
         working-directory: Users
         run: mvn -B clean verify
 
+      # Docker publishing is enabled only for main and version releases.
+      # PR, develop and feature branches run build and tests only.
+
       # 4. Setup Docker Buildx
       - name: Setup Docker Buildx
-        if: github.event_name != 'pull_request'
+        id: buildx
+        if: >-
+          github.event_name != 'pull_request' &&
+          (github.ref == 'refs/heads/main' ||
+          startsWith(github.ref, 'refs/tags/v'))
         uses: docker/setup-buildx-action@v3
-      # 5. Login to Docker Hub (not needed for pull requests)
+
+      # 5. Login to Docker Hub
       - name: Login to Docker Hub
-        if: github.event_name != 'pull_request'
+        id: docker_login
+        if: >-
+          github.event_name != 'pull_request' &&
+          (github.ref == 'refs/heads/main' ||
+          startsWith(github.ref, 'refs/tags/v'))
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-#      # 5. Login to GitHub Container Registry
-#      - name: Login to GHCR
-#        if: github.event_name != 'pull_request'
-#        uses: docker/login-action@v3
-#        with:
-#          registry: ghcr.io
-#          username: ${{ github.actor }}
-#          password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 6. Generate Docker image tags
-#      - name: Docker Metadata
-#        if: github.event_name != 'pull_request'
-#        id: meta
-#        uses: docker/metadata-action@v5
-#        with:
-#          images: ghcr.io/${{ github.repository_owner }}/users-service
-#          tags: |
-#            type=raw,value=latest,enable={{is_default_branch}}
-#            type=sha,prefix=sha-
-#            type=semver,pattern={{version}}
-#            type=semver,pattern={{major}}.{{minor}}
       # 6. Generate Docker image tags
       - name: Docker Metadata
         id: meta
+        if: >-
+          github.event_name != 'pull_request' &&
+          (github.ref == 'refs/heads/main' ||
+          startsWith(github.ref, 'refs/tags/v'))
         uses: docker/metadata-action@v5
         with:
           images: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/users-service
           tags: |
-            type=raw,value=latest
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
 
-#      # 7. Build and Push Docker Image
-#      - name: Build and Push Image
-#        if: github.event_name != 'pull_request'
-#        uses: docker/build-push-action@v6
-#        with:
-#          context: ./Users
-#          file: ./Users/Dockerfile-multi-stage
-#          push: true
-#          tags: ${{ steps.meta.outputs.tags }}
-#          labels: ${{ steps.meta.outputs.labels }}
       # 7. Build and Push Docker Image
       - name: Build and Push Image
+        id: build_push
+        if: >-
+          github.event_name != 'pull_request' &&
+          (github.ref == 'refs/heads/main' ||
+          startsWith(github.ref, 'refs/tags/v'))
         uses: docker/build-push-action@v6
         with:
           context: ./Users
           file: ./Users/Dockerfile-multi-stage
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Generate professional CI/CD execution report
+      # 8. Generate professional CI/CD execution report
       - name: Generate Pipeline Summary
+        id: pipeline_summary
         if: always()
         env:
           CHECKOUT: ${{ steps.checkout.outcome }}
           JAVA: ${{ steps.java.outcome }}
           MAVEN: ${{ steps.maven.outcome }}
+          BUILDX: ${{ steps.buildx.outcome }}
           DOCKER_LOGIN: ${{ steps.docker_login.outcome }}
-          METADATA: ${{ steps.metadata.outcome }}
+          METADATA: ${{ steps.meta.outcome }}
           BUILD_PUSH: ${{ steps.build_push.outcome }}
           JOB_STATUS: ${{ job.status }}
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           get_status() {
             case "$1" in
@@ -137,17 +136,34 @@ jobs:
             echo "| Checkout Code | $(get_status "$CHECKOUT") |"
             echo "| Java Setup | $(get_status "$JAVA") |"
             echo "| Maven Build & Test | $(get_status "$MAVEN") |"
+            echo "| Docker Buildx | $(get_status "$BUILDX") |"
             echo "| Docker Hub Login | $(get_status "$DOCKER_LOGIN") |"
             echo "| Docker Metadata | $(get_status "$METADATA") |"
             echo "| Docker Build & Push | $(get_status "$BUILD_PUSH") |"
             echo ""
             if [ "$JOB_STATUS" = "success" ]; then
               echo "## 🟢 Pipeline Completed Successfully"
+            elif [ "$JOB_STATUS" = "cancelled" ]; then
+              echo "## 🟡 Pipeline Cancelled"
             else
-              echo "## 🔴 Pipeline Did Not Complete Successfully"
+              echo "## 🔴 Pipeline Failed"
             fi
             echo ""
+            echo "### Docker Image"
+            echo "Repository: docker.io/${DOCKERHUB_USERNAME:-${{ secrets.DOCKERHUB_USERNAME }}}/users-service"
+            echo ""
+            echo "Image Tags:"
+            if [ -n "$IMAGE_TAGS" ]; then
+              echo "$IMAGE_TAGS" | while read -r tag; do
+                echo "- \`$tag\`"
+              done
+            else
+              echo "- No image published in this run"
+            fi
+            echo ""
+            echo "### Build Information"
             echo "Repository: $GITHUB_REPOSITORY"
-            echo "Branch: $GITHUB_REF_NAME"
+            echo "Branch/Tag: $GITHUB_REF_NAME"
             echo "Commit: $GITHUB_SHA"
+            echo ""
           } >> "$GITHUB_STEP_SUMMARY"
