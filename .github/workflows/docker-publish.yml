@@ -110,3 +110,48 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Generate professional CI/CD execution report
+      - name: Generate Pipeline Summary
+        if: always()
+        env:
+          CHECKOUT: ${{ steps.checkout.outcome }}
+          JAVA: ${{ steps.java.outcome }}
+          MAVEN: ${{ steps.maven.outcome }}
+          DOCKER_LOGIN: ${{ steps.docker_login.outcome }}
+          METADATA: ${{ steps.metadata.outcome }}
+          BUILD_PUSH: ${{ steps.build_push.outcome }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          get_status() {
+            case "$1" in
+              success) echo "🟢 SUCCESS" ;;
+              failure) echo "🔴 FAILED" ;;
+              cancelled) echo "🟡 CANCELLED" ;;
+              skipped) echo "⚪ SKIPPED" ;;
+              *) echo "⚪ NOT EXECUTED" ;;
+            esac
+          }
+
+          {
+            echo "# 🚀 Docker CI/CD Pipeline Report"
+            echo ""
+            echo "| Pipeline Stage | Status |"
+            echo "|---|---|"
+            echo "| Checkout Code | $(get_status "$CHECKOUT") |"
+            echo "| Java Setup | $(get_status "$JAVA") |"
+            echo "| Maven Build & Test | $(get_status "$MAVEN") |"
+            echo "| Docker Hub Login | $(get_status "$DOCKER_LOGIN") |"
+            echo "| Docker Metadata | $(get_status "$METADATA") |"
+            echo "| Docker Build & Push | $(get_status "$BUILD_PUSH") |"
+            echo ""
+            if [ "$JOB_STATUS" = "success" ]; then
+              echo "## 🟢 Pipeline Completed Successfully"
+            else
+              echo "## 🔴 Pipeline Did Not Complete Successfully"
+            fi
+            echo ""
+            echo "Repository: $GITHUB_REPOSITORY"
+            echo "Branch: $GITHUB_REF_NAME"
+            echo "Commit: $GITHUB_SHA"
+          } >> "$GITHUB_STEP_SUMMARY"
